@@ -25,17 +25,10 @@ import (
 	"golang.org/x/oauth2"
 )
 
-func splitHeader(header string) (string, string, error) {
-	index := strings.Index(header, ":")
-	if index >= 0 {
-		return strings.TrimSpace(header[:index]), strings.TrimSpace(header[index+1:]), nil
-	}
-	return "", "", errors.New("invalid header")
-}
-
 func parseAuthRequest(authRequest []string) (method string, url string, headers map[string]string, err error) {
 
 	if len(authRequest) < 2 {
+		fs.Errorf("AnyShare", "[parseAuthRequest] invalid auth request")
 		err = errors.New("invalid auth request")
 		return
 	}
@@ -53,6 +46,20 @@ func parseAuthRequest(authRequest []string) (method string, url string, headers 
 	}
 
 	return
+}
+
+// parsePath parses a box 'url'
+func parsePath(path string) (root string) {
+	root = strings.Trim(path, "/")
+	return
+}
+
+func splitHeader(header string) (string, string, error) {
+	index := strings.Index(header, ":")
+	if index >= 0 {
+		return strings.TrimSpace(header[:index]), strings.TrimSpace(header[index+1:]), nil
+	}
+	return "", "", errors.New("invalid header")
 }
 
 type Options struct {
@@ -94,6 +101,7 @@ func (o *Object) ModTime(ctx context.Context) time.Time {
 
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadCloser, error) {
 	if o.stat.Id == "" {
+		fs.Errorf("AnyShare", "[Open] no id")
 		return nil, errors.New("cant't download - no id")
 	}
 
@@ -109,16 +117,18 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadClo
 		Post("/api/efast/v1/file/osdownload")
 
 	if err != nil {
-		fs.Errorf(o, "[anyshare] [osdownload] %s %s", o.remote, err.Error())
+		fs.Errorf("AnyShare", "[Open] osdownload %s %s", o.remote, err.Error())
 		return nil, err
 	}
 
 	method, url, headers, err := parseAuthRequest(downloadRes.Authrequest)
 
 	if err != nil {
-		fs.Errorf(o, "[anyshare] [parseAuthRequest] invalid auth request")
+		fs.Errorf("AnyShare", "[Open] invalid auth request")
 		return nil, err
 	}
+
+	fs.Infof("AnyShare", "[Open] %s %s %s", o.remote, method, url)
 
 	fs.FixRangeOption(options, o.Size())
 
@@ -130,7 +140,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadClo
 		Execute(method, url)
 
 	if err != nil {
-		fs.Errorf(o, "[anyshare] [download stream] %s %s %s", o.remote, method, url)
+		fs.Errorf("AnyShare", "[Open] download stream %s %s", o.remote, err.Error())
 		return nil, err
 	}
 
@@ -154,11 +164,12 @@ func (o *Object) readMetaData(ctx context.Context) (err error) {
 
 	if err != nil {
 		if apiErr, ok := err.(*api.Error); ok {
-			if apiErr.Code == 404 {
-				return fs.ErrorObjectNotFound
+			if apiErr.Code == 404002006 {
+				err = fs.ErrorObjectNotFound
 			}
 		}
-		return err
+		fs.Errorf("AnyShare", "[readMetaData] %s %s", o.remote, err.Error())
+		return
 	}
 
 	o.stat = stat
@@ -196,9 +207,12 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	modTime := src.ModTime(ctx)
 	remote := o.Remote()
 
+	fs.Debugf("AnyShare", "[Update] %s size %d modTime %s", remote, size, modTime.Local().String())
+
 	leaf, directoryID, err := o.fs.dirCache.FindPath(ctx, remote, true)
 
 	if err != nil {
+		fs.Errorf("AnyShare", "[Update] %s %s", remote, err.Error())
 		return err
 	}
 
@@ -223,14 +237,14 @@ func (o *Object) upload(ctx context.Context, in io.Reader, leaf, directoryID str
 		Post("/api/efast/v1/file/osbeginupload")
 
 	if err != nil {
-		fs.Errorf(o, "[anyshare][osbeginupload] %s %s", leaf, err.Error())
+		fs.Errorf("AnyShare", "[upload] %s %s", leaf, err.Error())
 		return err
 	}
 
 	method, url, headers, err := parseAuthRequest(uploadInfo.Authrequest)
 
 	if err != nil {
-		fs.Errorf(o, "[anyshare] [parseAuthRequest] invalid auth request")
+		fs.Errorf("AnyShare", "[upload] invalid auth request")
 		return err
 	}
 
@@ -241,7 +255,7 @@ func (o *Object) upload(ctx context.Context, in io.Reader, leaf, directoryID str
 		Execute(method, url)
 
 	if err != nil {
-		fs.Errorf(o, "[anyshare][upload stream] %s %s %s", leaf, method, url)
+		fs.Errorf("AnyShare", "[upload] %s %s %s", leaf, method, url)
 		return err
 	}
 
@@ -257,7 +271,7 @@ func (o *Object) upload(ctx context.Context, in io.Reader, leaf, directoryID str
 		Post("/api/efast/v1/file/osendupload")
 
 	if err != nil {
-		fs.Errorf(o, "[anyshare][osendupload] %s %s", leaf, err.Error())
+		fs.Errorf("AnyShare", "[upload] osendupload %s %s", leaf, err.Error())
 		return err
 	}
 
@@ -293,6 +307,7 @@ func (f *Fs) About(ctx context.Context) (usage *fs.Usage, err error) {
 		Get("/api/efast/v1/quota/user")
 
 	if err != nil {
+		fs.Errorf("AnyShare", "[About] failed to read user info")
 		return nil, errors.Wrap(err, "failed to read user info")
 	}
 
@@ -319,6 +334,7 @@ func (f *Fs) CreateDir(ctx context.Context, pathID, leaf string) (newID string, 
 		Post("/api/efast/v1/dir/create")
 
 	if err != nil {
+		fs.Errorf("AnyShare", "[CreateDir] %s %s", leaf, err.Error())
 		return "", err
 	}
 
@@ -329,6 +345,7 @@ func (f *Fs) createObject(ctx context.Context, remote string, modTime time.Time,
 	// Create the directory for the object if it doesn't exist
 	leaf, directoryID, err = f.dirCache.FindPath(ctx, remote, true)
 	if err != nil {
+		fs.Errorf("AnyShare", "[createObject] %s %s %s", leaf, directoryID, err.Error())
 		return
 	}
 	// Temporary Object under construction
@@ -348,6 +365,10 @@ func (f *Fs) deleteObject(ctx context.Context, id string) error {
 		Docid: id,
 	}).Post("/api/efast/v1/file/delete")
 
+	if err != nil {
+		fs.Errorf("AnyShare", "[deleteObject] %s %s", id, err.Error())
+	}
+
 	return err
 }
 
@@ -359,6 +380,10 @@ func (f *Fs) FindLeaf(ctx context.Context, pathID, leaf string) (pathIDOut strin
 		}
 		return false
 	})
+
+	if err != nil {
+		fs.Errorf("AnyShare", "[FindLeaf] %s %s %s", pathID, leaf, err.Error())
+	}
 
 	return pathIDOut, found, err
 }
@@ -373,7 +398,7 @@ func (f *Fs) Hashes() hash.Set {
 func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
 	directoryID, err := f.dirCache.FindDir(ctx, dir, false)
 
-	fs.Infof(f, "list %s", dir)
+	fs.Debugf("AnyShare", "[List] %s", dir)
 
 	if err == nil {
 		_, err = f.listAll(ctx, directoryID, false, false, func(stat *Stat) bool {
@@ -398,6 +423,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 	}
 
 	if err != nil {
+		fs.Debugf("AnyShare", "[List] %s %s", dir, err.Error())
 		return nil, err
 	}
 
@@ -501,38 +527,24 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 	srcObj, ok := src.(*Object)
 	if !ok {
-		fs.Debugf(src, "Can't move - not same remote type")
+		fs.Debugf("AnyShare", "[Move] Can't move - not same remote type")
 		return nil, fs.ErrorCantMove
 	}
 
+	fs.Debugf("AnyShare", "Move %s %s", src.Remote(), remote)
+
 	// Create temporary object
 	dstObj, leaf, directoryID, err := f.createObject(ctx, remote, srcObj.ModTime(ctx), srcObj.Size())
+
+	if directoryID == "" {
+		return nil, errors.New("invalid dest dir")
+	}
 
 	if err != nil {
 		return nil, err
 	}
 
-	if srcObj.ParentID() == directoryID {
-		var result efast.FileRenameRes
-
-		_, err = f.srv.R().
-			SetContext(ctx).
-			SetResult(&result).
-			SetBody(&efast.FileRenameReq{
-				Docid: srcObj.ID(),
-				Name:  leaf,
-				Ondup: 1,
-			}).
-			Post("/api/efast/v1/file/rename")
-
-		if err != nil {
-			return nil, err
-		}
-
-		dstObj.stat.Name = result.Name
-		dstObj.stat.Id = srcObj.ID()
-	} else {
-
+	if srcObj.ParentID() != directoryID {
 		var result efast.FileMoveRes
 
 		_, err = f.srv.R().
@@ -541,16 +553,41 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 			SetBody(&efast.FileMoveReq{
 				Docid:      srcObj.ID(),
 				Destparent: directoryID,
-				Ondup:      3,
+				Ondup:      2,
 			}).
 			Post("/api/efast/v1/file/move")
 
 		if err != nil {
+			fs.Errorf("AnyShare", "Move move %s %s %s", src.Remote(), remote, err.Error())
 			return nil, err
 		}
 
 		dstObj.stat.Name = result.Name
 		dstObj.stat.Id = result.Docid
+	} else {
+		dstObj.stat.Id = srcObj.stat.Id
+		dstObj.stat.Name = srcObj.stat.Name
+	}
+
+	if dstObj.stat.Name != leaf {
+		var result efast.FileRenameRes
+
+		_, err = f.srv.R().
+			SetContext(ctx).
+			SetResult(&result).
+			SetBody(&efast.FileRenameReq{
+				Docid: dstObj.ID(),
+				Name:  leaf,
+				Ondup: 2,
+			}).
+			Post("/api/efast/v1/file/rename")
+
+		if err != nil {
+			fs.Errorf("AnyShare", "Move rename %s %s %s", src.Remote(), remote, err.Error())
+			return nil, err
+		}
+
+		dstObj.stat.Name = result.Name
 	}
 
 	dstObj.stat.Rev = srcObj.stat.Rev
@@ -594,7 +631,7 @@ func (f *Fs) PublicLink(ctx context.Context, remote string, expire fs.Duration, 
 	itemType := "folder"
 
 	if err != nil {
-		fs.Debugf(f, "attempting to share single file '%s'", remote)
+		fs.Debugf("AnyShare", "[PublicLink] attempting to share single file '%s'", remote)
 		o, err := f.NewObject(ctx, remote)
 		if err != nil {
 			return "", err
@@ -668,10 +705,12 @@ func (f *Fs) purgeCheck(ctx context.Context, dir string, check bool) error {
 }
 
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
+	fs.Debugf("AnyShare", "[Put] %s", src.Remote())
 	// If directory doesn't exist, file doesn't exist so can upload
 	remote := src.Remote()
 	_, _, err := f.dirCache.FindPath(ctx, remote, false)
 	if err != nil {
+		fs.Debugf("AnyShare", "[Put] %s %s", src.Remote(), err.Error())
 		if err == fs.ErrorDirNotFound {
 			return f.PutUnchecked(ctx, in, src, options...)
 		}
@@ -684,6 +723,7 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 }
 
 func (f *Fs) PutStream(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
+	fs.Debugf("AnyShare", "[PutStream] %s", src.Remote())
 	return f.Put(ctx, in, src, options...)
 }
 
@@ -788,6 +828,8 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 		return nil, err
 	}
 
+	root = parsePath(root)
+
 	rootURL := fmt.Sprintf("https://%s:%s", opt.Host, opt.Port)
 
 	client, _, err := oauthutil.NewClient(ctx, name, config, &oauth2.Config{
@@ -830,10 +872,14 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 		if err != nil {
 			return f, nil
 		}
-		_, err := tempF.NewObject(ctx, remote)
+		_, err := tempF.newObjectWithInfo(ctx, remote, nil)
 		if err != nil {
-			return f, nil
+			if err == fs.ErrorObjectNotFound {
+				return f, nil
+			}
+			return nil, err
 		}
+		f.features.Fill(ctx, &tempF)
 		f.dirCache = tempF.dirCache
 		f.root = tempF.root
 		return f, fs.ErrorIsFile
