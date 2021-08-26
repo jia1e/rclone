@@ -219,7 +219,7 @@ jobs:
 
       - uses: actions/upload-artifact@v2
         with:
-          name: binary-${{ matrix.job_name }}
+          name: rclone-${{ matrix.job_name }}
           path: |
             rclone
             rclone.exe
