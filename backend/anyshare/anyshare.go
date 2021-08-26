@@ -292,7 +292,6 @@ type Fs struct {
 	opt      Options            // parsed options
 	features *fs.Features       // optional features
 	dirCache *dircache.DirCache // Map of directory path to directory id
-	pacer    *fs.Pacer          // pacer for API calls
 	srv      *resty.Client      // the connection to the anyshare server
 	fileSrv  *resty.Client
 }
