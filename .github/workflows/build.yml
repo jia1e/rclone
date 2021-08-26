@@ -217,13 +217,10 @@ jobs:
           make compile_all
         if: matrix.compile_all
 
-      - uses: "marvinpinto/action-automatic-releases@latest"
+      - uses: actions/upload-artifact@v2
         with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          automatic_release_tag: "latest"
-          prerelease: true
-          title: "Development Build"
-          files: |
+          name: binary-${{ matrix.job_name }}
+          path: |
             rclone
             rclone.exe
 
