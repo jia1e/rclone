@@ -654,6 +654,7 @@ func (f *Fs) PublicLink(ctx context.Context, remote string, expire fs.Duration, 
 	}
 
 	if len(result) < 1 || result[0] == nil {
+		// TODO
 		return "", errors.New("create shared link failed")
 	}
 
@@ -833,7 +834,7 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 	rootURL := fmt.Sprintf("https://%s:%s", opt.Host, opt.Port)
 
 	client, _, err := oauthutil.NewClient(ctx, name, config, &oauth2.Config{
-		Scopes: nil,
+		Scopes: []string{"offline", "openid", "all"},
 		Endpoint: oauth2.Endpoint{
 			AuthURL:  rootURL + "/oauth2/auth",
 			TokenURL: rootURL + "/oauth2/token",
@@ -974,7 +975,7 @@ func init() {
 
 				return oauthutil.ConfigOut("", &oauthutil.Options{
 					OAuth2Config: &oauth2.Config{
-						Scopes: nil,
+						Scopes: []string{"offline", "openid", "all"},
 						Endpoint: oauth2.Endpoint{
 							AuthURL:  rootURL + "/oauth2/auth",
 							TokenURL: rootURL + "/oauth2/token",
