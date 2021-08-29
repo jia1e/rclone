@@ -13,12 +13,13 @@ import (
 	"github.com/pkg/errors"
 	"github.com/rclone/rclone/backend/anyshare/api"
 	"github.com/rclone/rclone/backend/anyshare/api/efast"
-	oauth2Api "github.com/rclone/rclone/backend/anyshare/api/oauth2"
+	oauth2api "github.com/rclone/rclone/backend/anyshare/api/oauth2"
 	"github.com/rclone/rclone/backend/anyshare/api/sharedlink"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/configstruct"
+	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/lib/dircache"
 	"github.com/rclone/rclone/lib/oauthutil"
@@ -52,6 +53,19 @@ func parseAuthRequest(authRequest []string) (method string, url string, headers 
 func parsePath(path string) (root string) {
 	root = strings.Trim(path, "/")
 	return
+}
+
+var retryErrorCodes = []int{
+	401001001,
+}
+
+func shouldRetryOnApiErrorCode(code int) bool {
+	for _, c := range retryErrorCodes {
+		if code == c {
+			return true
+		}
+	}
+	return false
 }
 
 func splitHeader(header string) (string, string, error) {
@@ -168,7 +182,6 @@ func (o *Object) readMetaData(ctx context.Context) (err error) {
 				err = fs.ErrorObjectNotFound
 			}
 		}
-		fs.Errorf("AnyShare", "[readMetaData] %s %s", o.remote, err.Error())
 		return
 	}
 
@@ -323,6 +336,10 @@ func (f *Fs) About(ctx context.Context) (usage *fs.Usage, err error) {
 func (f *Fs) CreateDir(ctx context.Context, pathID, leaf string) (newID string, err error) {
 
 	var result efast.DirCreateRes
+
+	if pathID == "" {
+		return "", errors.New("can't create dir in root directory")
+	}
 
 	_, err = f.srv.R().SetContext(ctx).
 		SetResult(&result).
@@ -516,9 +533,6 @@ func (f *Fs) listAll(ctx context.Context, dirId string, dirOnly bool, fileOnly b
 	return found, nil
 }
 
-// Mkdir makes the directory (container, bucket)
-//
-// Shouldn't return an error if it already exists
 func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 	_, err := f.dirCache.FindDir(ctx, dir, true)
 	return err
@@ -641,7 +655,7 @@ func (f *Fs) PublicLink(ctx context.Context, remote string, expire fs.Duration, 
 		itemType = "file"
 	}
 
-	result := make([]*sharedlink.AddItemInfoDocumentRealname, 1)
+	result := make([]*sharedlink.LinkTypeAndLinkId, 0)
 
 	_, err = f.srv.R().
 		SetContext(ctx).
@@ -653,12 +667,32 @@ func (f *Fs) PublicLink(ctx context.Context, remote string, expire fs.Duration, 
 		return "", err
 	}
 
-	if len(result) < 1 || result[0] == nil {
-		// TODO
-		return "", errors.New("create shared link failed")
+	var linkId string
+
+	if len(result) > 0 {
+		linkId = result[0].Id
+	} else {
+		var result sharedlink.LinkId
+
+		_, err = f.srv.R().
+			SetContext(ctx).
+			SetResult(&result).
+			SetBody(&sharedlink.AddDocumentRealname{
+				Item: &sharedlink.AddItemInfoDocumentRealname{
+					Type_: itemType,
+					Id:    id,
+				},
+			}).
+			Post("/api/shared-link/v1/document/realname")
+
+		if err != nil {
+			return "", err
+		}
+
+		linkId = result.Id
 	}
 
-	return fmt.Sprintf("https://%s:%s/link/%s", f.opt.Host, f.opt.Port, result[0].Id), nil
+	return fmt.Sprintf("https://%s:%s/link/%s", f.opt.Host, f.opt.Port, linkId), nil
 }
 
 func (f *Fs) Purge(ctx context.Context, dir string) error {
@@ -847,10 +881,31 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 	rootID := ""
 
 	f := &Fs{
-		name:    name,
-		root:    root,
-		opt:     *opt,
-		srv:     resty.NewWithClient(client).SetHostURL(rootURL).SetRetryCount(3).SetError(api.Error{}),
+		name: name,
+		root: root,
+		opt:  *opt,
+		srv: resty.NewWithClient(client).
+			SetHostURL(rootURL).
+			SetRetryCount(3).
+			SetError(api.Error{}).
+			OnAfterResponse(func(c *resty.Client, r *resty.Response) error {
+				if r.StatusCode() > 399 {
+					return r.Error().(*api.Error)
+				}
+				return nil
+			}).
+			AddRetryCondition(func(r *resty.Response, err error) bool {
+
+				if fserrors.ContextError(r.Request.Context(), &err) {
+					return false
+				}
+
+				if apiErr, ok := err.(*api.Error); ok {
+					return shouldRetryOnApiErrorCode(apiErr.Code)
+				}
+
+				return fserrors.ShouldRetry(err)
+			}),
 		fileSrv: resty.New().SetRetryCount(3),
 	}
 
@@ -939,19 +994,19 @@ func init() {
 
 					client := resty.New().SetHostURL(rootURL).SetRetryCount(3)
 
-					var oauth2Client oauth2Api.CreateClientSuccess
+					var oauth2Client oauth2api.CreateClientSuccess
 
 					_, err := client.R().
 						SetContext(ctx).
-						SetBody(&oauth2Api.CreateClientRequest{
+						SetBody(&oauth2api.CreateClientRequest{
 							RedirectUris:           []string{oauthutil.RedirectURL},
 							GrantTypes:             []string{"authorization_code", "refresh_token", "implicit"},
 							ResponseTypes:          []string{"token id_token", "code", "token"},
 							ClientName:             "Mac客户端",
 							Scope:                  "offline openid all",
 							PostLogoutRedirectUris: []string{oauthutil.RedirectURL + "fake-post-logout-redirect-url"},
-							Metadata: &oauth2Api.ModelMap{
-								Device: &oauth2Api.Device{
+							Metadata: &oauth2api.ModelMap{
+								Device: &oauth2api.Device{
 									Name:        "RichClient",
 									ClientType:  "mac_os",
 									Description: "RichClient for mac_os",
